@@ -1,0 +1,149 @@
+services:
+  db:
+    image: 'postgres:latest'
+    container_name: postgres_cinema
+    env_file:
+      - .env
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_cinema_data:/var/lib/postgresql/data/
+    networks:
+      - cinema_network
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB -h 127.0.0.1 || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  web:
+    restart: always
+    build: .
+    container_name: backend_cinema
+    command: [ "/bin/bash", "/commands/run_web_server_prod.sh" ]
+    env_file:
+      - .env
+    environment:
+      - LOG_LEVEL=debug
+      - PYTHONPATH=/usr/src/fastapi
+      - WATCHFILES_FORCE_POLLING=true
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    volumes:
+      - ./src:/usr/src/fastapi
+    networks:
+      - cinema_network
+
+  redis:
+    image: "redis:latest"
+    container_name: redis_cinema
+    restart: always
+    ports:
+      - "6379:6379"
+    networks:
+      - cinema_network
+
+  celery_worker:
+    build: .
+    container_name: celery_worker_cinema
+    command: [ "celery", "-A", "config.celery_config.celery_app", "worker", "--loglevel=info" ]
+    depends_on:
+      redis:
+        condition: service_started
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/usr/src/fastapi
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    volumes:
+      - ./src:/usr/src/fastapi
+    networks:
+      - cinema_network
+
+  celery_beat:
+    build: .
+    container_name: celery_beat_cinema
+    command: [ "python", "-m", "celery", "-A", "config.celery_config.celery_app", "beat", "--loglevel=info", "--schedule=/tmp/celerybeat-schedule" ]
+    depends_on:
+      redis:
+        condition: service_started
+      celery_worker:
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/usr/src/fastapi
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    volumes:
+      - ./src:/usr/src/fastapi
+    networks:
+      - cinema_network
+
+  migrator:
+    build: .
+    container_name: alembic_migrator_cinema
+    command: ["/bin/bash", "/commands/run_migration.sh"]
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./src:/usr/src/fastapi
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/usr/src/fastapi
+    networks:
+      - cinema_network
+
+  minio:
+    image: minio/minio:latest
+    container_name: minio-cinema
+    command: server --console-address ":9001" /data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    env_file:
+      - .env
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cinema_network
+
+  minio_mc:
+    build:
+      context: .
+      dockerfile: docker/minio_mc/Dockerfile
+    container_name: minio_mc_cinema
+    command: ["/bin/sh", "-c", "/commands/setup_minio.sh"]
+    depends_on:
+      minio:
+        condition: service_healthy
+    env_file:
+      - .env
+    networks:
+      - cinema_network
+
+volumes:
+  postgres_cinema_data:
+    driver: local
+  minio_data:
+    driver: local
+
+networks:
+  cinema_network:
+    driver: bridge
