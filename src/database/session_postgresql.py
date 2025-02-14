@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 
@@ -12,6 +14,15 @@ PostgresqlSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=po
 
 
 def get_postgresql_db() -> Session:
+    db = PostgresqlSessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+@contextmanager
+def get_postgresql_db_contextmanager() -> Session:
     db = PostgresqlSessionLocal()
     try:
         yield db
